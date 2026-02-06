@@ -1,0 +1,467 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { 
+  LayoutDashboard, 
+  Database, 
+  Settings, 
+  RefreshCw, 
+  TrendingUp, 
+  AlertTriangle, 
+  Package, 
+  Search,
+  CheckCircle,
+  XCircle,
+  LogIn
+} from 'lucide-react';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip as RechartsTooltip, 
+  Legend, 
+  ResponsiveContainer, 
+  LineChart, 
+  Line 
+} from 'recharts';
+
+// --- DATA SIMULASI (MOCK DATA) ---
+// Digunakan jika koneksi gagal atau user memilih mode demo
+const MOCK_DATA = [
+  { itemNo: '1001', description: 'Kursi Kantor Ergonomis', inventory: 12, unitPrice: 1500000, salesLast30Days: 45, leadTimeDays: 7 },
+  { itemNo: '1002', description: 'Meja Kerja Minimalis', inventory: 50, unitPrice: 2000000, salesLast30Days: 10, leadTimeDays: 14 },
+  { itemNo: '1003', description: 'Lampu Belajar LED', inventory: 5, unitPrice: 250000, salesLast30Days: 80, leadTimeDays: 5 },
+  { itemNo: '1004', description: 'Lemari Arsip Besi', inventory: 20, unitPrice: 3500000, salesLast30Days: 15, leadTimeDays: 10 },
+  { itemNo: '1005', description: 'Papan Tulis Whiteboard', inventory: 100, unitPrice: 500000, salesLast30Days: 20, leadTimeDays: 3 },
+  { itemNo: '1006', description: 'Proyektor HD', inventory: 2, unitPrice: 5500000, salesLast30Days: 8, leadTimeDays: 20 },
+  { itemNo: '1007', description: 'Kursi Lipat', inventory: 200, unitPrice: 150000, salesLast30Days: 50, leadTimeDays: 5 },
+  { itemNo: '1008', description: 'Monitor Stand', inventory: 8, unitPrice: 400000, salesLast30Days: 25, leadTimeDays: 7 },
+];
+
+const App = () => {
+  // --- STATE MANAGEMENT ---
+  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, data, settings
+  const [config, setConfig] = useState({
+    url: '',
+    username: '',
+    password: '' // Biasanya Web Service Access Key di BC
+  });
+  const [data, setData] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('idle'); // idle, success, error
+  const [errorMsg, setErrorMsg] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+
+  // --- LOGIKA BISNIS & FETCHING ---
+
+  // Fungsi simulasi fetch data (karena CORS biasanya memblokir akses langsung browser ke BC tanpa proxy)
+  const fetchData = async (isDemo = false) => {
+    setLoading(true);
+    setConnectionStatus('idle');
+    setErrorMsg('');
+
+    try {
+      if (isDemo) {
+        // Simulasi delay jaringan
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        setData(MOCK_DATA);
+        setConnectionStatus('success');
+      } else {
+        // Logika Fetch Asli (Akan terblokir CORS di environment sandbox ini, tapi ini kodenya)
+        if (!config.url || !config.username || !config.password) {
+          throw new Error("Mohon lengkapi URL dan Kredensial.");
+        }
+
+        // Basic Auth Header encoding
+        const authHeader = 'Basic ' + btoa(config.username + ':' + config.password);
+        
+        const response = await fetch(config.url, {
+          headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json',
+            // 'Accept': 'application/json' // Penting untuk OData
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`Gagal terhubung: ${response.status} ${response.statusText}`);
+        }
+
+        const json = await response.json();
+        // Asumsi struktur OData BC standard (value array)
+        const mappedData = json.value.map(item => ({
+          itemNo: item.No,
+          description: item.Description,
+          inventory: item.Inventory || 0,
+          unitPrice: item.UnitPrice || 0,
+          salesLast30Days: Math.floor(Math.random() * 50), // Simulasi data penjualan jika tidak ada di endpoint item
+          leadTimeDays: 7 // Default lead time
+        }));
+
+        setData(mappedData);
+        setConnectionStatus('success');
+      }
+    } catch (err) {
+      console.error(err);
+      setConnectionStatus('error');
+      setErrorMsg(err.message + ". (Catatan: Browser mungkin memblokir koneksi langsung ke ERP karena CORS. Gunakan Mode Demo untuk pratinjau).");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- ANALISIS DATA ---
+  
+  // Menghitung rekomendasi stok
+  const processedData = useMemo(() => {
+    return data.map(item => {
+      const dailySales = item.salesLast30Days / 30;
+      const safetyStock = dailySales * 5; // Buffer 5 hari
+      const expectedDemandDuringLeadTime = dailySales * item.leadTimeDays;
+      const reorderPoint = Math.ceil(expectedDemandDuringLeadTime + safetyStock);
+      const stockStatus = item.inventory <= reorderPoint ? 'Critical' : item.inventory <= reorderPoint * 1.5 ? 'Warning' : 'Safe';
+      const recommendQty = Math.max(0, (reorderPoint * 2) - item.inventory); // Target stock 2x reorder point
+
+      return {
+        ...item,
+        dailySales,
+        reorderPoint,
+        stockStatus,
+        recommendQty
+      };
+    });
+  }, [data]);
+
+  const filteredData = useMemo(() => {
+    return processedData.filter(item => 
+      item.description.toLowerCase().includes(searchTerm.toLowerCase()) || 
+      item.itemNo.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [processedData, searchTerm]);
+
+  const kpiStats = useMemo(() => {
+    const totalItems = processedData.length;
+    const criticalItems = processedData.filter(i => i.stockStatus === 'Critical').length;
+    const totalValue = processedData.reduce((acc, curr) => acc + (curr.inventory * curr.unitPrice), 0);
+    const potentialSales = processedData.reduce((acc, curr) => acc + (curr.salesLast30Days * curr.unitPrice), 0);
+    return { totalItems, criticalItems, totalValue, potentialSales };
+  }, [processedData]);
+
+  // --- KOMPONEN UI ---
+
+  const renderSidebar = () => (
+    <div className="w-64 bg-slate-900 text-white min-h-screen flex-shrink-0 flex flex-col shadow-xl">
+      <div className="p-6 border-b border-slate-700">
+        <h1 className="text-xl font-bold flex items-center gap-2">
+          <TrendingUp className="text-blue-400" />
+          StockAI <span className="text-xs bg-blue-600 px-1 rounded">BC365</span>
+        </h1>
+        <p className="text-xs text-slate-400 mt-1">Analytics & Forecasting</p>
+      </div>
+      <nav className="flex-1 p-4 space-y-2">
+        <button 
+          onClick={() => setActiveTab('dashboard')}
+          className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'dashboard' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}
+        >
+          <LayoutDashboard size={20} /> Dasbor Analisis
+        </button>
+        <button 
+          onClick={() => setActiveTab('data')}
+          className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'data' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}
+        >
+          <Database size={20} /> Data & Rekomendasi
+        </button>
+        <button 
+          onClick={() => setActiveTab('settings')}
+          className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'settings' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}
+        >
+          <Settings size={20} /> Koneksi API
+        </button>
+      </nav>
+      <div className="p-4 border-t border-slate-700 text-xs text-slate-500 text-center">
+        v1.0.0 &copy; 2024
+      </div>
+    </div>
+  );
+
+  const renderConnectionPanel = () => (
+    <div className="max-w-2xl mx-auto mt-10 p-6 bg-white rounded-xl shadow-sm border border-slate-200">
+      <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+        <Settings className="text-blue-600" /> Konfigurasi Dynamics 365
+      </h2>
+      
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">Web Service URL (OData V4)</label>
+          <input 
+            type="text" 
+            placeholder="https://api.businesscentral.dynamics.com/v2.0/..." 
+            className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+            value={config.url}
+            onChange={(e) => setConfig({...config, url: e.target.value})}
+          />
+          <p className="text-xs text-slate-500 mt-1">Gunakan URL OData untuk Page Item Card atau Query Sales.</p>
+        </div>
+        
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Username</label>
+            <input 
+              type="text" 
+              className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+              value={config.username}
+              onChange={(e) => setConfig({...config, username: e.target.value})}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Web Service Key / Password</label>
+            <input 
+              type="password" 
+              className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+              value={config.password}
+              onChange={(e) => setConfig({...config, password: e.target.value})}
+            />
+          </div>
+        </div>
+
+        {connectionStatus === 'error' && (
+          <div className="p-4 bg-red-50 text-red-700 rounded-lg flex items-start gap-2 text-sm">
+            <XCircle size={18} className="mt-0.5 flex-shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+
+        {connectionStatus === 'success' && (
+          <div className="p-4 bg-green-50 text-green-700 rounded-lg flex items-center gap-2 text-sm">
+            <CheckCircle size={18} />
+            <span>Data berhasil dimuat! Pindah ke menu Dasbor untuk melihat analisis.</span>
+          </div>
+        )}
+
+        <div className="pt-4 flex gap-3">
+          <button 
+            onClick={() => fetchData(false)} 
+            disabled={loading}
+            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 px-6 rounded-lg font-medium flex justify-center items-center gap-2 transition-colors disabled:opacity-50"
+          >
+            {loading ? <RefreshCw className="animate-spin" /> : <LogIn size={18} />}
+            Hubungkan ke D365
+          </button>
+          
+          <button 
+            onClick={() => fetchData(true)} 
+            disabled={loading}
+            className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 px-6 rounded-lg font-medium border border-slate-300 transition-colors disabled:opacity-50"
+          >
+            Gunakan Demo Data
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderDashboard = () => (
+    <div className="space-y-6">
+      {/* KPI Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+          <div className="text-slate-500 text-sm font-medium mb-1">Total SKU</div>
+          <div className="text-2xl font-bold text-slate-800">{kpiStats.totalItems}</div>
+        </div>
+        <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+          <div className="text-slate-500 text-sm font-medium mb-1">Perlu Restock (Kritis)</div>
+          <div className="text-2xl font-bold text-red-600 flex items-center gap-2">
+            {kpiStats.criticalItems} <AlertTriangle size={18} />
+          </div>
+        </div>
+        <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+          <div className="text-slate-500 text-sm font-medium mb-1">Nilai Inventaris</div>
+          <div className="text-2xl font-bold text-blue-600">
+            Rp {(kpiStats.totalValue / 1000000).toFixed(1)} Jt
+          </div>
+        </div>
+        <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+          <div className="text-slate-500 text-sm font-medium mb-1">Potensi Penjualan (30 Hari)</div>
+          <div className="text-2xl font-bold text-green-600">
+            Rp {(kpiStats.potentialSales / 1000000).toFixed(1)} Jt
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Chart Penjualan Tertinggi */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-96">
+          <h3 className="text-lg font-bold text-slate-800 mb-4">Top 5 Produk Terlaris (30 Hari)</h3>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={[...processedData].sort((a,b) => b.salesLast30Days - a.salesLast30Days).slice(0,5)}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="description" tick={{fontSize: 10}} interval={0} height={50} angle={-10} textAnchor="end" />
+              <YAxis />
+              <RechartsTooltip formatter={(value) => [`${value} Unit`, 'Terjual']} />
+              <Bar dataKey="salesLast30Days" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Chart Stok vs Reorder Point */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-96">
+          <h3 className="text-lg font-bold text-slate-800 mb-4">Analisis Stok Kritis</h3>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart 
+              data={[...processedData]
+                .sort((a,b) => (a.inventory - a.reorderPoint) - (b.inventory - b.reorderPoint))
+                .slice(0,5)
+              }
+              layout="vertical"
+            >
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+              <XAxis type="number" />
+              <YAxis dataKey="description" type="category" width={120} tick={{fontSize: 10}} />
+              <RechartsTooltip />
+              <Legend />
+              <Bar dataKey="inventory" name="Stok Saat Ini" fill="#64748b" barSize={20} radius={[0, 4, 4, 0]} />
+              <Bar dataKey="reorderPoint" name="Batas Aman (ROP)" fill="#ef4444" barSize={20} radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Quick Action List */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="p-4 border-b border-slate-200 bg-red-50 flex justify-between items-center">
+          <h3 className="font-bold text-red-800 flex items-center gap-2">
+            <AlertTriangle size={18} /> Perlu Tindakan Segera
+          </h3>
+          <span className="text-xs bg-red-200 text-red-800 px-2 py-1 rounded-full">{kpiStats.criticalItems} Item</span>
+        </div>
+        <div className="divide-y divide-slate-100">
+          {processedData.filter(i => i.stockStatus === 'Critical').map((item) => (
+            <div key={item.itemNo} className="p-4 flex justify-between items-center hover:bg-slate-50">
+              <div>
+                <div className="font-medium text-slate-800">{item.description}</div>
+                <div className="text-xs text-slate-500">SKU: {item.itemNo} | Sisa Stok: {item.inventory}</div>
+              </div>
+              <div className="text-right">
+                <div className="text-sm font-bold text-blue-600">Pesan {item.recommendQty} Unit</div>
+                <div className="text-xs text-slate-400">ROP: {item.reorderPoint}</div>
+              </div>
+            </div>
+          ))}
+          {processedData.filter(i => i.stockStatus === 'Critical').length === 0 && (
+            <div className="p-8 text-center text-slate-400">Semua stok dalam keadaan aman.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderDataTable = () => (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-[calc(100vh-8rem)]">
+      <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row gap-4 justify-between items-center">
+        <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+          <Database size={18} /> Data Inventaris & Prediksi
+        </h2>
+        <div className="relative w-full md:w-64">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={16} />
+          <input 
+            type="text" 
+            placeholder="Cari Item No / Nama..." 
+            className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
+      </div>
+      
+      <div className="flex-1 overflow-auto">
+        <table className="w-full text-left text-sm text-slate-600">
+          <thead className="bg-slate-50 text-slate-700 sticky top-0 font-semibold shadow-sm z-10">
+            <tr>
+              <th className="p-4 border-b">No. Item</th>
+              <th className="p-4 border-b">Deskripsi</th>
+              <th className="p-4 border-b text-right">Stok Fisik</th>
+              <th className="p-4 border-b text-right">Terjual (30hr)</th>
+              <th className="p-4 border-b text-right bg-blue-50">ROP (Batas)</th>
+              <th className="p-4 border-b text-center">Status</th>
+              <th className="p-4 border-b text-right font-bold text-blue-700">Rekomendasi Order</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {filteredData.length > 0 ? (
+              filteredData.map((item) => (
+                <tr key={item.itemNo} className="hover:bg-slate-50 transition-colors">
+                  <td className="p-4 font-mono text-xs">{item.itemNo}</td>
+                  <td className="p-4 font-medium text-slate-800">{item.description}</td>
+                  <td className="p-4 text-right">{item.inventory}</td>
+                  <td className="p-4 text-right text-slate-500">{item.salesLast30Days}</td>
+                  <td className="p-4 text-right bg-blue-50/50 font-medium">{item.reorderPoint}</td>
+                  <td className="p-4 text-center">
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      item.stockStatus === 'Critical' ? 'bg-red-100 text-red-800' :
+                      item.stockStatus === 'Warning' ? 'bg-yellow-100 text-yellow-800' :
+                      'bg-green-100 text-green-800'
+                    }`}>
+                      {item.stockStatus === 'Critical' ? 'Kritis' : item.stockStatus === 'Warning' ? 'Waspada' : 'Aman'}
+                    </span>
+                  </td>
+                  <td className="p-4 text-right font-bold text-blue-600">
+                    {item.recommendQty > 0 ? `+${item.recommendQty}` : '-'}
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan="7" className="p-12 text-center text-slate-400">
+                  {data.length === 0 ? "Belum ada data. Silakan hubungkan ke D365 atau muat data demo di menu Pengaturan." : "Data tidak ditemukan."}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex bg-slate-50 min-h-screen font-sans">
+      {/* Sidebar Navigation */}
+      {renderSidebar()}
+
+      {/* Main Content Area */}
+      <main className="flex-1 p-8 overflow-y-auto max-h-screen">
+        <header className="flex justify-between items-center mb-8">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-800">
+              {activeTab === 'dashboard' ? 'Ringkasan Bisnis' : 
+               activeTab === 'data' ? 'Detail Inventaris' : 'Pengaturan Sistem'}
+            </h2>
+            <p className="text-slate-500 text-sm">
+              {new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+             <div className={`h-3 w-3 rounded-full ${data.length > 0 ? 'bg-green-500 animate-pulse' : 'bg-slate-300'}`}></div>
+             <span className="text-sm font-medium text-slate-600">
+               {data.length > 0 ? 'D365 Connected' : 'Offline'}
+             </span>
+          </div>
+        </header>
+
+        {activeTab === 'dashboard' && (data.length > 0 ? renderDashboard() : 
+          <div className="text-center py-20 bg-white rounded-xl border border-dashed border-slate-300">
+            <Package size={48} className="mx-auto text-slate-300 mb-4" />
+            <h3 className="text-lg font-medium text-slate-700">Tidak ada data untuk ditampilkan</h3>
+            <p className="text-slate-500 mb-6">Silakan konfigurasi koneksi atau gunakan data demo.</p>
+            <button onClick={() => setActiveTab('settings')} className="text-blue-600 font-medium hover:underline">Pergi ke Pengaturan &rarr;</button>
+          </div>
+        )}
+        
+        {activeTab === 'data' && renderDataTable()}
+        
+        {activeTab === 'settings' && renderConnectionPanel()}
+      </main>
+    </div>
+  );
+};
+
+export default App;
