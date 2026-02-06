@@ -1,311 +1,259 @@
-import React, { useState, useEffect } from 'react';
-import { Calculator, Download, Trash2, Info, AlertCircle, FileText, FileUp, FileSpreadsheet } from 'lucide-react';
-
-// --- Fungsi Utiliti ---
-
-// Konversi format angka Indonesia (1.000,00) ke float Javascript (1000.00)
-const parseNumber = (val) => {
-  if (val === undefined || val === null || val === '') return 0;
-  if (typeof val === 'number') return val;
-  const str = String(val).trim();
-  if (str === '-' || str === '') return 0;
-  
-  // Menangani format ribuan titik dan desimal koma
-  let normalized = str.replace(/\./g, '').replace(',', '.');
-  const number = parseFloat(normalized);
-  return isNaN(number) ? 0 : number;
-};
-
-const getZScore = (probability) => {
-  const p = probability;
-  if (p >= 0.999) return 3.09;
-  if (p >= 0.99) return 2.33;
-  if (p >= 0.98) return 2.05;
-  if (p >= 0.97) return 1.88;
-  if (p >= 0.96) return 1.75;
-  if (p >= 0.95) return 1.645;
-  if (p >= 0.90) return 1.28;
-  if (p >= 0.85) return 1.04;
-  if (p >= 0.80) return 0.84;
-  if (p >= 0.50) return 0.00;
-  return 1.645;
-};
-
-const calculateStdDev = (arr) => {
-  if (arr.length === 0) return 0;
-  const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
-  const variance = arr.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / arr.length;
-  return Math.sqrt(variance);
-};
-
-export default function InventoryApp() {
-  const [parsedData, setParsedData] = useState([]);
-  const [sla, setSla] = useState(95);
-  const [leadTime, setLeadTime] = useState(30);
-  const [processedResults, setProcessedResults] = useState([]);
-  const [activeTab, setActiveTab] = useState('input');
-  const [fileName, setFileName] = useState("");
-  const [isXLSXLoaded, setIsXLSXLoaded] = useState(false);
-
-  // Memuat pustaka XLSX dari CDN
-  useEffect(() => {
-    const script = document.createElement('script');
-    script.src = "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
-    script.async = true;
-    script.onload = () => setIsXLSXLoaded(true);
-    document.body.appendChild(script);
-    return () => {
-      document.body.removeChild(script);
-    };
-  }, []);
-
-  // --- Fungsi Muat Turun Templat XLSX ---
-  const downloadTemplate = () => {
-    if (!isXLSXLoaded) return;
-    const XLSX = window.XLSX;
-    const headers = [
-      ["Template Kalkulasi Stok (Isi data di bawah header ini)"],
-      ["Produk", "Jan_Retail", "Feb_Retail", "Mar_Retail", "Apr_Retail", "May_Retail", "Jun_Retail", "Jul_Retail", "Aug_Retail", "Sep_Retail", "Oct_Retail", "Nov_Retail", "Dec_Retail", "Jan_Project"],
-      ["CONTOH-PRODUK-1", 1664, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 219],
-      ["CONTOH-PRODUK-2", 673, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4010]
-    ];
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventory Optimizer - GitHub Pages</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel untuk JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- XLSX Library -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
     
-    const ws = XLSX.utils.aoa_to_sheet(headers);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Template");
-    XLSX.writeFile(wb, "Template_Data_Stok.xlsx");
-  };
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-slate-50">
+    <div id="root"></div>
 
-  // --- Fungsi Baca Fail XLSX ---
-  const handleExcelUpload = (e) => {
-    if (!isXLSXLoaded) return;
-    const XLSX = window.XLSX;
-    const file = e.target.files[0];
-    if (!file) return;
-    setFileName(file.name);
+    <script type="text/babel">
+        const { useState, useEffect } = React;
 
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const bstr = evt.target.result;
-      const wb = XLSX.read(bstr, { type: 'binary' });
-      const wsname = wb.SheetNames[0];
-      const ws = wb.Sheets[wsname];
-      const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
-
-      const headerRowIndex = data.findIndex(row => row.some(cell => String(cell).toLowerCase().includes('produk')));
-      if (headerRowIndex === -1) return;
-
-      const dataRows = data.slice(headerRowIndex + 1);
-      const cleanData = dataRows.filter(row => row[0]).map((row, index) => {
-        const retailData = [];
-        for (let i = 1; i <= 12; i++) {
-          retailData.push(parseNumber(row[i]));
-        }
-        
-        const projectVal = parseNumber(row[13]);
-        const totalHistory = [...retailData];
-        totalHistory[0] += projectVal; 
-
-        return {
-          id: index,
-          product: row[0],
-          history: totalHistory,
-          rawData: { retail: retailData, project: projectVal }
+        // --- Komponen Icon Sederhana (Pengganti Lucide-React agar kompatibel HTML) ---
+        const Icon = ({ name, className }) => {
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            }, [name]);
+            return <i data-lucide={name} className={className}></i>;
         };
-      });
 
-      setParsedData(cleanData);
-      setActiveTab('result');
-    };
-    reader.readAsBinaryString(file);
-  };
+        // --- Fungsi Utiliti ---
+        const parseNumber = (val) => {
+            if (val === undefined || val === null || val === '') return 0;
+            if (typeof val === 'number') return val;
+            const str = String(val).trim();
+            let normalized = str.replace(/\./g, '').replace(',', '.');
+            const number = parseFloat(normalized);
+            return isNaN(number) ? 0 : number;
+        };
 
-  // --- Kalkulasi ---
-  useEffect(() => {
-    if (parsedData.length === 0) return;
+        const getZScore = (probability) => {
+            const p = probability;
+            if (p >= 0.999) return 3.09;
+            if (p >= 0.99) return 2.33;
+            if (p >= 0.98) return 2.05;
+            if (p >= 0.97) return 1.88;
+            if (p >= 0.96) return 1.75;
+            if (p >= 0.95) return 1.645;
+            if (p >= 0.90) return 1.28;
+            if (p >= 0.50) return 0.00;
+            return 1.645;
+        };
 
-    const z = getZScore(sla / 100);
-    const leadTimeInMonths = leadTime / 30;
-    
-    const results = parsedData.map(item => {
-      const history = item.history;
-      const avgMonthlyDemand = history.reduce((a, b) => a + b, 0) / history.length;
-      const stdDev = calculateStdDev(history);
-      const safetyStock = z * stdDev * Math.sqrt(leadTimeInMonths);
-      const leadTimeDemand = avgMonthlyDemand * leadTimeInMonths;
-      const minStock = leadTimeDemand + safetyStock;
+        const calculateStdDev = (arr) => {
+            if (arr.length === 0) return 0;
+            const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+            const variance = arr.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / arr.length;
+            return Math.sqrt(variance);
+        };
 
-      return {
-        ...item,
-        avgMonthlyDemand,
-        stdDev,
-        safetyStock,
-        minStock
-      };
-    });
+        function InventoryApp() {
+            const [parsedData, setParsedData] = useState([]);
+            const [sla, setSla] = useState(95);
+            const [leadTime, setLeadTime] = useState(30);
+            const [processedResults, setProcessedResults] = useState([]);
+            const [activeTab, setActiveTab] = useState('input');
+            const [fileName, setFileName] = useState("");
 
-    setProcessedResults(results);
-  }, [parsedData, sla, leadTime]);
+            const downloadTemplate = () => {
+                const XLSX = window.XLSX;
+                const headers = [
+                    ["Template Kalkulasi Stok (Isi data di bawah header ini)"],
+                    ["Produk", "Jan_Retail", "Feb_Retail", "Mar_Retail", "Apr_Retail", "May_Retail", "Jun_Retail", "Jul_Retail", "Aug_Retail", "Sep_Retail", "Oct_Retail", "Nov_Retail", "Dec_Retail", "Jan_Project"],
+                    ["CONTOH-PRODUK-1", 1664, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 219],
+                    ["CONTOH-PRODUK-2", 673, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4010]
+                ];
+                const ws = XLSX.utils.aoa_to_sheet(headers);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Template");
+                XLSX.writeFile(wb, "Template_Data_Stok.xlsx");
+            };
 
-  const exportFinalResults = () => {
-    if (!isXLSXLoaded) return;
-    const XLSX = window.XLSX;
-    const dataToExport = processedResults.map(r => ({
-      "Nama Produk": r.product,
-      "Rata-rata/Bulan": r.avgMonthlyDemand.toFixed(2),
-      "Standar Deviasi": r.stdDev.toFixed(2),
-      "Safety Stock": Math.ceil(r.safetyStock),
-      "Minimum Stock (ROP)": Math.ceil(r.minStock),
-      "SLA (%)": sla,
-      "Lead Time (Hari)": leadTime
-    }));
+            const handleExcelUpload = (e) => {
+                const XLSX = window.XLSX;
+                const file = e.target.files[0];
+                if (!file) return;
+                setFileName(file.name);
 
-    const ws = XLSX.utils.json_to_sheet(dataToExport);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Hasil Kalkulasi");
-    XLSX.writeFile(wb, "Hasil_Kalkulasi_Stok.xlsx");
-  };
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const bstr = evt.target.result;
+                    const wb = XLSX.read(bstr, { type: 'binary' });
+                    const wsname = wb.SheetNames[0];
+                    const ws = wb.Sheets[wsname];
+                    const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
 
-  return (
-    <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans text-slate-800">
-      <div className="max-w-6xl mx-auto space-y-6">
-        
-        {/* Header */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-center gap-4">
-          <div className="flex items-center gap-4">
-            <div className="bg-blue-600 p-3 rounded-xl shadow-lg shadow-blue-200">
-              <Calculator className="w-8 h-8 text-white" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900">Inventory Optimizer</h1>
-              <p className="text-slate-500 text-sm">Hitung Safety Stock & ROP secara automatik</p>
-            </div>
-          </div>
-          <div className="flex bg-slate-100 p-1 rounded-xl">
-            <button 
-              onClick={() => setActiveTab('input')}
-              className={`px-6 py-2 rounded-lg font-semibold transition-all ${activeTab === 'input' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
-            >
-              Muat Naik
-            </button>
-            <button 
-              onClick={() => setActiveTab('result')}
-              disabled={parsedData.length === 0}
-              className={`px-6 py-2 rounded-lg font-semibold transition-all ${activeTab === 'result' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500 hover:text-slate-700 disabled:opacity-50'}`}
-            >
-              Analisis
-            </button>
-          </div>
-        </div>
+                    const headerRowIndex = data.findIndex(row => row.some(cell => String(cell).toLowerCase().includes('produk')));
+                    if (headerRowIndex === -1) return;
 
-        {activeTab === 'input' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center text-center space-y-4">
-              <div className="bg-green-100 p-4 rounded-full">
-                <FileSpreadsheet className="w-10 h-10 text-green-600" />
-              </div>
-              <h3 className="text-lg font-bold">1. Sediakan Data</h3>
-              <p className="text-slate-500 text-sm">Gunakan templat Excel kami untuk memastikan format data anda betul sebelum dimuat naik.</p>
-              <button 
-                onClick={downloadTemplate}
-                disabled={!isXLSXLoaded}
-                className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-900 text-white px-6 py-3 rounded-xl font-medium transition-all disabled:opacity-50"
-              >
-                <Download className="w-5 h-5" />
-                {isXLSXLoaded ? "Muat Turun Templat (.xlsx)" : "Memuat Sistem..."}
-              </button>
-            </div>
+                    const dataRows = data.slice(headerRowIndex + 1);
+                    const cleanData = dataRows.filter(row => row[0]).map((row, index) => {
+                        const retailData = [];
+                        for (let i = 1; i <= 12; i++) retailData.push(parseNumber(row[i]));
+                        const projectVal = parseNumber(row[13]);
+                        const totalHistory = [...retailData];
+                        totalHistory[0] += projectVal; 
 
-            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center text-center space-y-4">
-              <div className="bg-blue-100 p-4 rounded-full">
-                <FileUp className="w-10 h-10 text-blue-600" />
-              </div>
-              <h3 className="text-lg font-bold">2. Muat Naik Fail</h3>
-              <p className="text-slate-500 text-sm">Pilih fail Excel yang telah diisi. Sistem akan memproses data secara automatik.</p>
-              
-              <label className="w-full cursor-pointer">
-                <div className={`flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-medium transition-all ${!isXLSXLoaded && 'opacity-50 cursor-not-allowed'}`}>
-                  <FileText className="w-5 h-5" />
-                  {fileName ? "Tukar Fail" : "Pilih Fail Excel"}
+                        return {
+                            id: index,
+                            product: row[0],
+                            history: totalHistory,
+                            rawData: { retail: retailData, project: projectVal }
+                        };
+                    });
+
+                    setParsedData(cleanData);
+                    setActiveTab('result');
+                };
+                reader.readAsBinaryString(file);
+            };
+
+            useEffect(() => {
+                if (parsedData.length === 0) return;
+                const z = getZScore(sla / 100);
+                const leadTimeInMonths = leadTime / 30;
+                
+                const results = parsedData.map(item => {
+                    const history = item.history;
+                    const avgMonthlyDemand = history.reduce((a, b) => a + b, 0) / history.length;
+                    const stdDev = calculateStdDev(history);
+                    const safetyStock = z * stdDev * Math.sqrt(leadTimeInMonths);
+                    const leadTimeDemand = avgMonthlyDemand * leadTimeInMonths;
+                    const minStock = leadTimeDemand + safetyStock;
+
+                    return { ...item, avgMonthlyDemand, stdDev, safetyStock, minStock };
+                });
+                setProcessedResults(results);
+            }, [parsedData, sla, leadTime]);
+
+            const exportFinalResults = () => {
+                const XLSX = window.XLSX;
+                const dataToExport = processedResults.map(r => ({
+                    "Nama Produk": r.product,
+                    "Rata-rata/Bulan": r.avgMonthlyDemand.toFixed(2),
+                    "Standar Deviasi": r.stdDev.toFixed(2),
+                    "Safety Stock": Math.ceil(r.safetyStock),
+                    "Minimum Stock (ROP)": Math.ceil(r.minStock),
+                    "SLA (%)": sla,
+                    "Lead Time (Hari)": leadTime
+                }));
+                const ws = XLSX.utils.json_to_sheet(dataToExport);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Hasil Kalkulasi");
+                XLSX.writeFile(wb, "Hasil_Kalkulasi_Stok.xlsx");
+            };
+
+            return (
+                <div className="min-h-screen p-4 md:p-8">
+                    <div className="max-w-6xl mx-auto space-y-6">
+                        {/* Header */}
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-center gap-4">
+                            <div className="flex items-center gap-4">
+                                <div className="bg-blue-600 p-3 rounded-xl shadow-lg shadow-blue-200">
+                                    <Icon name="calculator" className="w-8 h-8 text-white" />
+                                </div>
+                                <div>
+                                    <h1 className="text-2xl font-bold text-slate-900">Inventory Optimizer</h1>
+                                    <p className="text-slate-500 text-sm">Hitung Safety Stock & ROP secara otomatis</p>
+                                </div>
+                            </div>
+                            <div className="flex bg-slate-100 p-1 rounded-xl">
+                                <button onClick={() => setActiveTab('input')} className={`px-6 py-2 rounded-lg font-semibold transition-all ${activeTab === 'input' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}>Muat Naik</button>
+                                <button onClick={() => setActiveTab('result')} disabled={parsedData.length === 0} className={`px-6 py-2 rounded-lg font-semibold transition-all ${activeTab === 'result' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500 disabled:opacity-50'}`}>Analisis</button>
+                            </div>
+                        </div>
+
+                        {activeTab === 'input' && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center text-center space-y-4">
+                                    <div className="bg-green-100 p-4 rounded-full"><Icon name="file-spreadsheet" className="w-10 h-10 text-green-600" /></div>
+                                    <h3 className="text-lg font-bold">1. Sediakan Data</h3>
+                                    <button onClick={downloadTemplate} className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-900 text-white px-6 py-3 rounded-xl font-medium transition-all">
+                                        <Icon name="download" className="w-5 h-5" /> Muat Turun Templat (.xlsx)
+                                    </button>
+                                </div>
+                                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center text-center space-y-4">
+                                    <div className="bg-blue-100 p-4 rounded-full"><Icon name="file-up" className="w-10 h-10 text-blue-600" /></div>
+                                    <h3 className="text-lg font-bold">2. Muat Naik Fail</h3>
+                                    <label className="w-full cursor-pointer">
+                                        <div className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-medium">
+                                            <Icon name="file-text" className="w-5 h-5" /> {fileName ? "Tukar Fail" : "Pilih Fail Excel"}
+                                        </div>
+                                        <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleExcelUpload} />
+                                    </label>
+                                    {fileName && <p className="text-xs font-mono text-blue-600 bg-blue-50 px-2 py-1 rounded">Fail: {fileName}</p>}
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'result' && (
+                            <div className="space-y-6">
+                                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-8 text-center md:text-left">
+                                    <div className="space-y-3">
+                                        <label className="flex justify-between text-sm font-bold text-slate-700">Target SLA <span className="text-blue-600">{sla}%</span></label>
+                                        <input type="range" min="50" max="99" value={sla} onChange={(e) => setSla(Number(e.target.value))} className="w-full h-2 bg-slate-200 rounded-lg accent-blue-600" />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="block text-sm font-bold text-slate-700">Lead Time (Hari)</label>
+                                        <input type="number" value={leadTime} onChange={(e) => setLeadTime(Number(e.target.value))} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold" />
+                                    </div>
+                                    <div className="flex items-end">
+                                        <button onClick={exportFinalResults} className="w-full flex justify-center items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-green-100 transition-all">
+                                            <Icon name="download" className="w-5 h-5" /> Eksport Hasil
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-x-auto">
+                                    <table className="w-full text-sm text-left">
+                                        <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b">
+                                            <tr>
+                                                <th className="px-6 py-4">Nama Produk</th>
+                                                <th className="px-6 py-4 text-center">Avg/Bln</th>
+                                                <th className="px-6 py-4 text-center text-blue-700 bg-blue-50/50">Safety Stock</th>
+                                                <th className="px-6 py-4 text-center text-green-700 bg-green-50/50">Min Stock (ROP)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y font-medium">
+                                            {processedResults.map((row) => (
+                                                <tr key={row.id}>
+                                                    <td className="px-6 py-4 font-bold">{row.product}</td>
+                                                    <td className="px-6 py-4 text-center">{row.avgMonthlyDemand.toLocaleString('id-ID', { maximumFractionDigits: 1 })}</td>
+                                                    <td className="px-6 py-4 text-center font-bold text-blue-600 bg-blue-50/20">{Math.ceil(row.safetyStock)}</td>
+                                                    <td className="px-6 py-4 text-center font-bold text-green-600 bg-green-50/20">{Math.ceil(row.minStock)}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 </div>
-                <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleExcelUpload} disabled={!isXLSXLoaded} />
-              </label>
-              {fileName && <p className="text-xs font-mono text-blue-600 bg-blue-50 px-2 py-1 rounded">Fail terpilih: {fileName}</p>}
-            </div>
-          </div>
-        )}
+            );
+        }
 
-        {activeTab === 'result' && (
-          <div className="space-y-6">
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-8">
-              <div className="space-y-3">
-                <label className="flex justify-between text-sm font-bold text-slate-700">
-                  Target SLA
-                  <span className="text-blue-600">{sla}%</span>
-                </label>
-                <input 
-                  type="range" min="50" max="99" step="1" 
-                  value={sla} onChange={(e) => setSla(Number(e.target.value))}
-                  className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                />
-                <div className="flex justify-between text-[10px] text-slate-400 font-bold">
-                  <span>RISIKO TINGGI (50%)</span>
-                  <span>SELAMAT (99%)</span>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-sm font-bold text-slate-700">Lead Time (Hari)</label>
-                <div className="relative">
-                  <input 
-                    type="number" value={leadTime} 
-                    onChange={(e) => setLeadTime(Number(e.target.value))}
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-bold"
-                  />
-                  <span className="absolute right-4 top-3.5 text-slate-400 text-sm font-bold">HARI</span>
-                </div>
-              </div>
-
-              <div className="flex items-end">
-                <button
-                  onClick={exportFinalResults}
-                  className="w-full flex justify-center items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold transition-all shadow-lg shadow-green-100"
-                >
-                  <Download className="w-5 h-5" />
-                  Eksport Hasil (.xlsx)
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm text-left">
-                  <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b border-slate-100">
-                    <tr>
-                      <th className="px-6 py-4 font-bold">Nama Produk</th>
-                      <th className="px-6 py-4 text-center">Avg Demand/Bln</th>
-                      <th className="px-6 py-4 text-center">Std Deviasi</th>
-                      <th className="px-6 py-4 text-center bg-blue-50/50 text-blue-700 font-bold border-x border-slate-100">Safety Stock</th>
-                      <th className="px-6 py-4 text-center bg-green-50/50 text-green-700 font-bold">Minimum Stock (ROP)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 font-medium">
-                    {processedResults.map((row) => (
-                      <tr key={row.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-6 py-4 text-slate-900 font-bold">{row.product}</td>
-                        <td className="px-6 py-4 text-center">{row.avgMonthlyDemand.toLocaleString('id-ID', { maximumFractionDigits: 1 })}</td>
-                        <td className="px-6 py-4 text-center text-slate-400">{row.stdDev.toLocaleString('id-ID', { maximumFractionDigits: 1 })}</td>
-                        <td className="px-6 py-4 text-center font-bold text-blue-600 bg-blue-50/20 border-x border-slate-100">{Math.ceil(row.safetyStock)}</td>
-                        <td className="px-6 py-4 text-center font-bold text-green-600 bg-green-50/20">{Math.ceil(row.minStock)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<InventoryApp />);
+    </script>
+</body>
+</html>
